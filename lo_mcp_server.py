@@ -32,6 +32,12 @@ Environment:
   LO_MCP_ROOTS     ':'-separated dirs documents may be read/written under
                    (default: $HOME:/tmp). Set to '/' to disable the check.
   LO_MCP_ALLOW_EXEC=1  enable the lo_run_uno escape-hatch tool.
+  LO_MCP_OWN_SOFFICE_ONLY=1  never attach to a LibreOffice this server did not
+                   start itself. Set by the sandbox wrapper: attaching to a
+                   pre-existing instance would run documents in *its* confinement,
+                   not ours.
+  LO_MCP_SANDBOX   informational label for the confinement in use, set by the
+                   wrapper install.sh --sandbox generates; reported by lo_status.
 """
 
 import json
@@ -49,6 +55,8 @@ PROFILE = os.path.expanduser(
     os.environ.get("LO_MCP_PROFILE", "~/.cache/lo-mcp-profile"))
 SOFFICE = os.environ.get("LO_MCP_SOFFICE", "")
 ALLOW_EXEC = os.environ.get("LO_MCP_ALLOW_EXEC", "") == "1"
+OWN_ONLY = os.environ.get("LO_MCP_OWN_SOFFICE_ONLY", "") == "1"
+SANDBOX = os.environ.get("LO_MCP_SANDBOX", "")
 ROOTS = [os.path.realpath(os.path.expanduser(p))
          for p in os.environ.get("LO_MCP_ROOTS",
                                  os.path.expanduser("~") + ":/tmp").split(":") if p]
@@ -75,6 +83,7 @@ class LO:
         self.ctx = None
         self.desktop = None
         self.proc = None
+        self.spawned = False
         self.docs = {}       # doc_id -> component
         self._next = 1
 
@@ -112,6 +121,7 @@ class LO:
         self.proc = subprocess.Popen(
             cmd, stdout=devnull, stderr=devnull, stdin=subprocess.DEVNULL,
             start_new_session=True)
+        self.spawned = True
 
     def connect(self, timeout=60):
         if self.desktop is not None:
@@ -121,8 +131,23 @@ class LO:
             except Exception:
                 self.ctx = self.desktop = None
         try:
+            if OWN_ONLY and not self.spawned:
+                # Do not adopt a stranger's LibreOffice: it may sit outside the
+                # confinement this server was started in.
+                raise RuntimeError("own-soffice-only")
             self.ctx = self._resolve()
         except Exception:
+            if OWN_ONLY and not self.spawned:
+                try:
+                    self._resolve()
+                except Exception:
+                    pass
+                else:
+                    raise RuntimeError(
+                        "something is already listening on port %d; refusing to "
+                        "attach to a LibreOffice this server did not start "
+                        "(LO_MCP_OWN_SOFFICE_ONLY=1). Use a different "
+                        "LO_MCP_PORT." % PORT)
             self._spawn()
             deadline = time.time() + timeout
             last = None
@@ -277,6 +302,8 @@ def t_status(a):
         return {"connected": True, "port": PORT, "libreoffice": ver,
                 "profile": PROFILE, "allowed_roots": ROOTS,
                 "exec_enabled": ALLOW_EXEC,
+                "sandbox": SANDBOX or "none",
+                "own_soffice_only": OWN_ONLY,
                 "open_docs": t_list_docs({})["docs"]}
     except Exception as e:
         return {"connected": False, "error": str(e)}

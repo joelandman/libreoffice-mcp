@@ -20,8 +20,9 @@ survives distro upgrades.
 ./install.sh --uninstall
 ```
 
-Useful flags: `--port 2003`, `--roots "$HOME:/srv/docs"`, `--allow-exec`,
-`--no-claude`, `--no-opencode`, `--prefix DIR`. `./install.sh --help` lists them all.
+Useful flags: `--sandbox` (see [Security perimeter](#security-perimeter)),
+`--port 2003`, `--roots "$HOME/Documents"`, `--allow-exec`, `--no-claude`,
+`--no-opencode`, `--prefix DIR`. `./install.sh --help` lists them all.
 
 The installer:
 
@@ -77,10 +78,81 @@ Positions and sizes are in **mm**; colors are `#RRGGBB`.
 | `LO_MCP_SOFFICE` | auto | path to `soffice` |
 | `LO_MCP_ROOTS` | `$HOME:/tmp` | `:`-separated dirs documents may live under; `/` disables the check |
 | `LO_MCP_ALLOW_EXEC` | unset | `1` enables `lo_run_uno` |
+| `LO_MCP_OWN_SOFFICE_ONLY` | unset | `1` refuses to attach to a LibreOffice this server did not start |
+| `LO_MCP_SANDBOX` | unset | label for the confinement in use; reported by `lo_status` |
 
-`LO_MCP_ROOTS` is a guard rail, not a sandbox: it stops an agent from wandering
-into `/etc` by accident, but the server runs with your full user rights.
-Leave `lo_run_uno` off unless you want the escape hatch.
+By itself `LO_MCP_ROOTS` is a guard rail, not a sandbox: it stops an agent from
+wandering into `/etc` by accident, but the server runs with your full user
+rights. Leave `lo_run_uno` off unless you want the escape hatch. For an actual
+boundary, see below.
+
+## Security perimeter
+
+```bash
+./install.sh --sandbox --roots "$HOME/Documents"
+```
+
+This registers a generated wrapper (`lo-mcp-sandboxed.sh`) with your agent
+instead of the bare server, and that wrapper runs **both** the MCP server and
+the headless LibreOffice it starts inside one [bubblewrap](https://github.com/containers/bubblewrap)
+namespace. Inside it: `/usr` and `/etc` read-only, a private `/tmp`, `/home`
+replaced by an empty tmpfs, and nothing bound writable except your `--roots`
+directories and the LibreOffice profile. `--unshare-net` means the confined
+process has no network at all — the agent reaches it over inherited stdio.
+
+### Why the perimeter has to enclose LibreOffice, not just the server
+
+`LO_MCP_ROOTS` is checked in the Python process, but the file I/O happens in
+`soffice`, a **separate process**. Anything that makes LibreOffice touch a file
+without passing through a tool argument goes around that check entirely:
+
+* a linked image or embedded OLE object in a document you open,
+* a `WEBSERVICE()` / DDE formula in a spreadsheet,
+* a document macro,
+* `lo_run_uno`, if you enabled it.
+
+Confining `soffice` is what closes those. `--unshare-net` also stops a hostile
+document from phoning home with what it read. Relatedly, `--sandbox` sets
+`LO_MCP_OWN_SOFFICE_ONLY=1`: without it the server will happily attach to a
+LibreOffice already listening on the port, which would run your documents in
+*that* process's confinement rather than its own.
+
+### Keep both layers
+
+Under `--sandbox` the `LO_MCP_ROOTS` check stays on, and it should. Tested with
+the app-level check disabled and only bubblewrap standing, a write to
+`~/escaped.odt` **reported success** — and no such file existed afterwards. It
+had gone into the sandbox's tmpfs and evaporated. The host was protected, but
+the agent believed it had saved your document.
+
+So the two layers do different jobs: the path check turns an out-of-bounds
+write into an honest error, and bubblewrap is the backstop for everything the
+path check cannot see. Neither one replaces the other.
+
+### Caveat emptor
+
+**No technological barrier is impervious to manipulation.** What is here raises
+the cost and narrows the blast radius of a mistake; it does not make one
+impossible, and it is not a defence against a determined attacker with local
+access. Known limits, so you can judge for yourself:
+
+* Kernel and bubblewrap bugs, and namespace escapes, are real and periodic.
+* `/etc` and `/usr` are readable inside the sandbox; treat anything there as
+  disclosed to whatever you open.
+* Everything in `--roots` is fully writable — an agent can still corrupt or
+  destroy documents it was legitimately given. Version control or backups are
+  the answer to that, not a sandbox.
+* The confinement runs as **you**, not as a lesser user. It restricts reach,
+  not privilege.
+* An agent that can edit the wrapper, the server, or your MCP config can
+  disable all of this. Nothing here defends against a client you have already
+  given write access to those files.
+* Documents are still parsed by LibreOffice's full format stack, which is a
+  large attack surface. The sandbox contains the outcome of a parser bug; it
+  does not prevent one.
+
+Decide what you are comfortable pointing an agent at, and assume anything
+inside `--roots` may be read, rewritten, or deleted.
 
 ## Testing
 
@@ -88,6 +160,9 @@ Leave `lo_run_uno` off unless you want the escape hatch.
 /usr/bin/python3 lo_mcp_server.py --selftest   # bridge + tool inventory
 /usr/bin/python3 test_e2e.py                   # 40+ real MCP calls, all 4 apps
 ```
+
+Under `--sandbox` the suite needs its scratch directory inside the perimeter —
+run it with `--roots` including `/tmp`, or test unsandboxed.
 
 `test_e2e.py` builds a Writer report (styles, replace, table), a Calc sheet with
 live formulas, an Impress deck with notes, and a Draw diagram; round-trips
@@ -103,6 +178,14 @@ path guard.
   `/usr/lib/libreoffice/program/python`, never a pyenv/conda Python.
 * **Port already in use** — reinstall with `--port 2003`.
 * **Server logs** go to stderr; Claude Code shows them under `/mcp`.
+* **`--sandbox` fails with "cannot create a namespace"** — unprivileged user
+  namespaces are disabled (`sysctl kernel.unprivileged_userns_clone`). Either
+  enable them or drop `--sandbox`.
+* **A sandboxed save "succeeds" but the file is nowhere** — the target was
+  outside `--roots` and landed in the sandbox's tmpfs. Re-run `install.sh
+  --sandbox --roots` with that directory included.
+* **`something is already listening on port NNNN`** — under `--sandbox` the
+  server refuses to adopt a LibreOffice it did not start. Use `--port`.
 
 ## License
 
