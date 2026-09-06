@@ -1,5 +1,9 @@
 # libreoffice-mcp
 
+[![Container: Docker | Podman](https://img.shields.io/badge/container-Docker%20%7C%20Podman-2496ED?logo=docker&logoColor=white)](#running-it-in-a-container-instead)
+[![Sandbox: bubblewrap](https://img.shields.io/badge/sandbox-bubblewrap-4A154B)](#security-perimeter)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-D22128)](LICENSE)
+
 An MCP server that lets an agent — Claude Code, opencode, grok, Cursor, Zed, or
 anything else speaking the Model Context Protocol — read and write
 **Writer, Calc, Impress and Draw** documents through a headless LibreOffice
