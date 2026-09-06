@@ -34,7 +34,7 @@ SERVER="$PREFIX/lo_mcp_server.py"
 PORT="${LO_MCP_PORT:-2002}"
 ROOTS="${LO_MCP_ROOTS:-$HOME:/tmp}"
 PROFILE="${LO_MCP_PROFILE:-$HOME/.cache/lo-mcp-profile}"
-ALLOW_EXEC=0; SANDBOX=0
+ALLOW_EXEC=0; SANDBOX=0; DOCKER=0; IMAGE="libreoffice-mcp"
 DO_CLAUDE=1; DO_OPENCODE=1; CHECK_ONLY=0; UNINSTALL=0; ASSUME_YES=0
 
 usage() {
@@ -49,6 +49,9 @@ Install the LibreOffice MCP server and register it with local agent clients.
   --no-opencode                 skip opencode registration
   --sandbox                     run the server inside a bubblewrap confinement
                                 that can only see the --roots directories
+  --docker                      run the server in a container instead; builds
+                                the image if it is missing (docker or podman)
+  --image NAME                  image to use with --docker (default libreoffice-mcp)
   --allow-exec                  enable the lo_run_uno escape-hatch tool
   --port PORT                   UNO socket port (default 2002)
   --roots "DIR:DIR"             dirs documents may be read/written under
@@ -64,6 +67,8 @@ while [ $# -gt 0 ]; do
     --no-opencode) DO_OPENCODE=0 ;;
     --allow-exec) ALLOW_EXEC=1 ;;
     --sandbox) SANDBOX=1 ;;
+    --docker) DOCKER=1 ;;
+    --image) IMAGE="$2"; shift ;;
     --yes|-y) ASSUME_YES=1 ;;
     --port) PORT="$2"; shift ;;
     --roots) ROOTS="$2"; shift ;;
@@ -102,7 +107,70 @@ PY
   exit 0
 fi
 
+if [ "$SANDBOX" = 1 ] && [ "$DOCKER" = 1 ]; then
+  die "--sandbox and --docker are two different confinements; pick one."
+fi
+
+# =========================================================== container mode
+# The container carries LibreOffice and the UNO bindings, so none of the host
+# discovery below applies: all this machine needs is an engine.
+if [ "$DOCKER" = 1 ]; then
+  say "Checking the container engine"
+  ENGINE="${LO_MCP_ENGINE:-}"
+  if [ -z "$ENGINE" ]; then
+    if command -v podman >/dev/null 2>&1; then ENGINE=podman
+    elif command -v docker >/dev/null 2>&1; then ENGINE=docker
+    else die "neither podman nor docker found; install one or drop --docker"; fi
+  fi
+  ok "$ENGINE — $("$ENGINE" --version 2>/dev/null | head -1)"
+
+  if "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
+    ok "image $IMAGE present"
+  elif [ "$CHECK_ONLY" = 1 ]; then
+    warn "would build image $IMAGE from $SRC_DIR/Dockerfile"
+  else
+    [ -f "$SRC_DIR/Dockerfile" ] || die "no Dockerfile in $SRC_DIR and no image $IMAGE"
+    say "Building $IMAGE (downloads LibreOffice; several minutes the first time)"
+    "$ENGINE" build -t "$IMAGE" "$SRC_DIR" >/dev/null || die "image build failed"
+    ok "built $IMAGE"
+  fi
+
+  # Only needed to write the client config files.
+  PYBIN="$(command -v python3 || true)"
+  [ -n "$PYBIN" ] || die "python3 not found on PATH"
+
+  if [ "$CHECK_ONLY" = 1 ]; then say "Check only — nothing was changed."; exit 0; fi
+
+  say "Installing the runner to $PREFIX"
+  mkdir -p "$PREFIX"
+  [ -f "$SRC_DIR/scripts/lo-mcp-docker.sh" ] || die "missing $SRC_DIR/scripts/lo-mcp-docker.sh"
+  RUNNER="$PREFIX/lo-mcp-docker.sh"
+  install -m 0755 "$SRC_DIR/scripts/lo-mcp-docker.sh" "$RUNNER"
+  ok "$RUNNER"
+
+  say "Smoke-testing the container (starts LibreOffice inside it, ~20s)"
+  _probe=$(printf '%s\n%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"install"}}}' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lo_status","arguments":{}}}' \
+    | LO_MCP_ROOTS="$ROOTS" LO_MCP_IMAGE="$IMAGE" LO_MCP_ENGINE="$ENGINE" \
+      timeout 200 "$RUNNER" 2>/dev/null || true)
+  # lo_status arrives as escaped JSON inside the RPC envelope, so the quotes
+  # are backslashed on the wire; match both forms.
+  case "$_probe" in
+    *'connected\": true'*|*'"connected": true'*) ok "LibreOffice reachable inside the container" ;;
+    *'"serverInfo"'*) die "the container starts but LibreOffice is not reachable inside it; run: LO_MCP_ROOTS=\"$ROOTS\" $RUNNER" ;;
+    *) die "the container did not respond; run: LO_MCP_ROOTS=\"$ROOTS\" $RUNNER" ;;
+  esac
+
+  CMD_BIN="$RUNNER"; CMD_ARGS=()
+  ENVARGS=(LO_MCP_ROOTS="$ROOTS" LO_MCP_IMAGE="$IMAGE" LO_MCP_ENGINE="$ENGINE")
+  [ "$ALLOW_EXEC" = 1 ] && ENVARGS+=(LO_MCP_ALLOW_EXEC=1)
+  SERVER="(in container image $IMAGE)"
+  PROFILE="(inside the container)"
+fi
+
 # ------------------------------------------------------- 1. LibreOffice
+if [ "$DOCKER" = 0 ]; then
 say "Checking LibreOffice"
 install_lo() {
   if   command -v apt-get >/dev/null 2>&1; then
@@ -191,12 +259,16 @@ else
   fi
 fi
 
-ENVARGS=(LO_MCP_PORT="$PORT" LO_MCP_PROFILE="$PROFILE" LO_MCP_ROOTS="$ROOTS")
-[ "$ALLOW_EXEC" = 1 ] && ENVARGS+=(LO_MCP_ALLOW_EXEC=1)
+fi   # end of host (non-container) installation
+
+if [ "$DOCKER" = 0 ]; then
+  ENVARGS=(LO_MCP_PORT="$PORT" LO_MCP_PROFILE="$PROFILE" LO_MCP_ROOTS="$ROOTS")
+  [ "$ALLOW_EXEC" = 1 ] && ENVARGS+=(LO_MCP_ALLOW_EXEC=1)
+fi
 
 # What the MCP client will actually launch. Without --sandbox that is the
 # interpreter and the server; with it, the wrapper that confines both.
-CMD_BIN="$PYBIN"; CMD_ARGS=("$SERVER")
+if [ "$DOCKER" = 0 ]; then CMD_BIN="$PYBIN"; CMD_ARGS=("$SERVER"); fi
 
 if [ "$SANDBOX" = 1 ]; then
   say "Building the bubblewrap confinement"
@@ -356,7 +428,7 @@ $(say "Done")
   port      $PORT      profile $PROFILE
   roots     $ROOTS
   exec tool $([ "$ALLOW_EXEC" = 1 ] && echo enabled || echo disabled)
-  sandbox   $([ "$SANDBOX" = 1 ] && echo "bubblewrap ($WRAPPER)" || echo "none — the server has your full user rights")
+  sandbox   $([ "$SANDBOX" = 1 ] && echo "bubblewrap ($WRAPPER)" || { [ "$DOCKER" = 1 ] && echo "container $IMAGE via $RUNNER" || echo "none — the server has your full user rights"; })
 
 Next steps
   * Claude Code: restart it, then run /mcp — you should see "$NAME" with 32 tools.

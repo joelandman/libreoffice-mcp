@@ -20,7 +20,7 @@ survives distro upgrades.
 ./install.sh --uninstall
 ```
 
-Useful flags: `--sandbox` (see [Security perimeter](#security-perimeter)),
+Useful flags: `--sandbox` or `--docker` (see [Security perimeter](#security-perimeter)),
 `--port 2003`, `--roots "$HOME/Documents"`, `--allow-exec`, `--no-claude`,
 `--no-opencode`, `--prefix DIR`. `./install.sh --help` lists them all.
 
@@ -134,6 +134,46 @@ So the two layers do different jobs: the path check turns an out-of-bounds
 write into an honest error, and bubblewrap is the backstop for everything the
 path check cannot see. Neither one replaces the other.
 
+### Running it in a container instead
+
+If you would rather use Docker or Podman than bubblewrap:
+
+```bash
+./install.sh --docker --roots "$HOME/Documents:$HOME/Downloads"
+```
+
+That builds the image from the `Dockerfile` if it is missing, installs
+`lo-mcp-docker.sh`, and registers that with your agents. The container carries
+LibreOffice and the UNO bindings, so **the host needs no LibreOffice at all** —
+only an engine. It runs with `--network none` and mounts nothing but your
+roots. `--image NAME` selects a different image.
+
+To drive it by hand, or from a client you configure yourself:
+
+```bash
+docker build -t libreoffice-mcp .
+LO_MCP_ROOTS="$HOME/Documents" scripts/lo-mcp-docker.sh
+```
+
+Two things about containers that are easy to get wrong, both handled by the
+runner script:
+
+* **Mount document directories at the same path inside as outside**
+  (`-v "$HOME/Documents:$HOME/Documents"`). The agent sends absolute host paths
+  and nothing rewrites them; mounting at `/data` means every path the agent
+  knows is wrong.
+* **The user mapping differs between engines.** Under rootful Docker you want
+  `--user "$(id -u):$(id -g)"`, or files land on the host owned by root. Under
+  rootless Podman that same flag pushes you into the subuid range and writes
+  fail with an opaque LibreOffice IO error — there you want `--userns=keep-id`.
+  `lo-mcp-docker.sh` detects the engine and picks for you.
+
+Bubblewrap starts in about a second and shares the host's LibreOffice; the
+container is ~600 MB and starts more slowly, but needs nothing installed on the
+host and is easier to pin to a known LibreOffice version. Both confine
+LibreOffice itself, which is the part that matters, and everything in the next
+section applies to both.
+
 ### Caveat emptor
 
 **No technological barrier is impervious to manipulation.** What is here raises
@@ -152,6 +192,9 @@ access. Known limits, so you can judge for yourself:
 * An agent that can edit the wrapper, the server, or your MCP config can
   disable all of this. Nothing here defends against a client you have already
   given write access to those files.
+* The container is not stronger than the bubblewrap confinement by virtue of
+  being a container. Both rely on the same kernel namespaces. A rootful Docker
+  daemon adds a root-owned attack surface the bubblewrap path does not have.
 * Documents are still parsed by LibreOffice's full format stack, which is a
   large attack surface. The sandbox contains the outcome of a parser bug; it
   does not prevent one.
@@ -194,6 +237,10 @@ path guard.
 * **The confined server starts but cannot reach LibreOffice** — usually a
   profile shared with another running instance. Give it its own
   `LO_MCP_PROFILE`, or stop the other instance.
+* **Container writes fail with `Error Area:Io Class:Write`, or files appear
+  owned by root or by a high-numbered uid** — the user mapping is wrong for
+  your engine. See the container notes above; `LO_MCP_ENGINE=docker|podman`
+  overrides the detection.
 
 ## License
 
