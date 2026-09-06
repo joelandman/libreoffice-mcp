@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+#
+# Copyright 2026 Joe Landman
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
 # Install the LibreOffice MCP server and register it with local agent clients.
 #
 #   ./install.sh                  install + register with every client found
@@ -21,6 +37,23 @@ PROFILE="${LO_MCP_PROFILE:-$HOME/.cache/lo-mcp-profile}"
 ALLOW_EXEC=0
 DO_CLAUDE=1; DO_OPENCODE=1; CHECK_ONLY=0; UNINSTALL=0; ASSUME_YES=0
 
+usage() {
+  cat <<'USAGE'
+Install the LibreOffice MCP server and register it with local agent clients.
+
+  ./install.sh                  install + register with every client found
+  ./install.sh --check          only report what is present, change nothing
+  ./install.sh --uninstall      remove the server and its registrations
+
+  --no-claude                   skip Claude Code registration
+  --no-opencode                 skip opencode registration
+  --allow-exec                  enable the lo_run_uno escape-hatch tool
+  --port PORT                   UNO socket port (default 2002)
+  --roots "DIR:DIR"             dirs documents may be read/written under
+  --prefix DIR                  install location (default ~/.local/share/libreoffice-mcp)
+USAGE
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK_ONLY=1 ;;
@@ -32,7 +65,7 @@ while [ $# -gt 0 ]; do
     --port) PORT="$2"; shift ;;
     --roots) ROOTS="$2"; shift ;;
     --prefix) PREFIX="$2"; SERVER="$PREFIX/lo_mcp_server.py"; shift ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift

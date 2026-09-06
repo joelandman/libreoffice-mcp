@@ -1,8 +1,11 @@
 # libreoffice-mcp
 
-An MCP server that lets an agent (Claude Code, opencode, grok, Cursor, Zed, …)
-read and write **Writer, Calc, Impress and Draw** documents through a headless
-LibreOffice instance driven over the UNO bridge.
+An MCP server that lets an agent — Claude Code, opencode, grok, Cursor, Zed, or
+anything else speaking the Model Context Protocol — read and write
+**Writer, Calc, Impress and Draw** documents through a headless LibreOffice
+instance driven over the UNO bridge.
+
+Copyright © 2026 Joe Landman. Licensed under the [Apache License, Version 2.0](LICENSE).
 
 Design goals: **no pip installs, no npm, no network**. It is a single Python
 file using only the standard library plus the `uno` module that ships with
@@ -18,9 +21,10 @@ survives distro upgrades.
 ```
 
 Useful flags: `--port 2003`, `--roots "$HOME:/srv/docs"`, `--allow-exec`,
-`--no-claude`, `--no-opencode`, `--prefix DIR`.
+`--no-claude`, `--no-opencode`, `--prefix DIR`. `./install.sh --help` lists them all.
 
 The installer:
+
 1. finds or installs LibreOffice + the Python-UNO bindings
    (apt / dnf / pacman / zypper / brew),
 2. finds a Python that can `import uno` (usually `/usr/bin/python3`, *not*
@@ -31,6 +35,8 @@ The installer:
    (`~/.config/opencode/opencode.json`, backed up first), and writes
    `mcp-config-snippet.json` in the standard `mcpServers` shape for every
    other client.
+
+It is idempotent — re-running it re-registers cleanly rather than duplicating.
 
 ## How it works
 
@@ -97,3 +103,26 @@ path guard.
   `/usr/lib/libreoffice/program/python`, never a pyenv/conda Python.
 * **Port already in use** — reinstall with `--port 2003`.
 * **Server logs** go to stderr; Claude Code shows them under `/mcp`.
+
+## License
+
+```
+Copyright 2026 Joe Landman
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+This project drives LibreOffice as a separate process over its UNO IPC bridge
+and bundles no LibreOffice code. LibreOffice itself is licensed under the
+[MPL-2.0](https://www.libreoffice.org/download/license/) by The Document
+Foundation and must be installed separately.
