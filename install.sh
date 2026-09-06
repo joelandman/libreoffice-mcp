@@ -166,18 +166,29 @@ if [ "$CHECK_ONLY" = 1 ]; then
 fi
 
 # --------------------------------------------------- 3. install the server
+if [ "$SANDBOX" = 1 ] && [ -z "${LO_MCP_PROFILE:-}" ]; then
+  # A confined LibreOffice must not share a profile with an unconfined one
+  # still running on the host: two soffice processes on one profile is
+  # unsupported and hangs waiting for the lock.
+  PROFILE="$HOME/.cache/lo-mcp-profile-sandbox"
+fi
+
 say "Installing server to $PREFIX"
 mkdir -p "$PREFIX"
 install -m 0755 "$SRC_DIR/lo_mcp_server.py" "$SERVER"
 [ -f "$SRC_DIR/test_e2e.py" ] && install -m 0755 "$SRC_DIR/test_e2e.py" "$PREFIX/test_e2e.py"
 ok "$SERVER"
 
-say "Smoke-testing the UNO bridge (starts headless LibreOffice, may take ~20s)"
-if LO_MCP_PORT="$PORT" LO_MCP_PROFILE="$PROFILE" LO_MCP_ROOTS="$ROOTS" \
-   "$PYBIN" "$SERVER" --selftest 2>/dev/null | grep -q '"connected": true'; then
-  ok "bridge up on port $PORT"
+if [ "$SANDBOX" = 1 ]; then
+  say "Skipping the unconfined bridge test (the confinement test below covers it)"
 else
-  die "could not talk to LibreOffice; run: $PYBIN $SERVER --selftest"
+  say "Smoke-testing the UNO bridge (starts headless LibreOffice, may take ~20s)"
+  if LO_MCP_PORT="$PORT" LO_MCP_PROFILE="$PROFILE" LO_MCP_ROOTS="$ROOTS" \
+     "$PYBIN" "$SERVER" --selftest 2>/dev/null | grep -q '"connected": true'; then
+    ok "bridge up on port $PORT"
+  else
+    die "could not talk to LibreOffice; run: $PYBIN $SERVER --selftest"
+  fi
 fi
 
 ENVARGS=(LO_MCP_PORT="$PORT" LO_MCP_PROFILE="$PROFILE" LO_MCP_ROOTS="$ROOTS")
@@ -267,13 +278,21 @@ if [ "$SANDBOX" = 1 ]; then
   chmod 0755 "$WRAPPER"
   ok "$WRAPPER"
 
-  say "Smoke-testing the confinement"
-  if printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"install"}}}' \
-     | timeout 90 "$WRAPPER" 2>/dev/null | grep -q '"serverInfo"'; then
-    ok "server starts inside the confinement"
-  else
-    die "the confined server did not respond; run it by hand to see why: $WRAPPER"
-  fi
+  say "Smoke-testing the confinement (starts LibreOffice inside it, ~20s)"
+  _probe=$(printf '%s\n%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"install"}}}' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lo_status","arguments":{}}}' \
+    | timeout 150 "$WRAPPER" 2>/dev/null || true)
+  case "$_probe" in
+    *'"serverInfo"'*) ;;
+    *) die "the confined server did not start; run it by hand to see why: $WRAPPER" ;;
+  esac
+  # Answering initialize proves nothing about the bridge: LibreOffice is only
+  # started on the first real call, and that is where confinement problems show.
+  case "$_probe" in
+    *'connected\": true'*|*'"connected": true'*) ok "LibreOffice reachable inside the confinement" ;;
+    *) die "the confined server starts but cannot reach LibreOffice inside the confinement. Run it by hand and read stderr: $WRAPPER" ;;
+  esac
 
   CMD_BIN="$WRAPPER"; CMD_ARGS=()
   # The wrapper carries the settings itself; nothing to leak through the client.

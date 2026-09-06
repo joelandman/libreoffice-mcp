@@ -100,6 +100,11 @@ replaced by an empty tmpfs, and nothing bound writable except your `--roots`
 directories and the LibreOffice profile. `--unshare-net` means the confined
 process has no network at all — the agent reaches it over inherited stdio.
 
+A sandboxed install uses its own LibreOffice profile
+(`~/.cache/lo-mcp-profile-sandbox`). Two `soffice` processes sharing one
+profile is unsupported and hangs on the profile lock, so a confined instance
+must not share with an unconfined one that may still be running.
+
 ### Why the perimeter has to enclose LibreOffice, not just the server
 
 `LO_MCP_ROOTS` is checked in the Python process, but the file I/O happens in
@@ -186,6 +191,9 @@ path guard.
   --sandbox --roots` with that directory included.
 * **`something is already listening on port NNNN`** — under `--sandbox` the
   server refuses to adopt a LibreOffice it did not start. Use `--port`.
+* **The confined server starts but cannot reach LibreOffice** — usually a
+  profile shared with another running instance. Give it its own
+  `LO_MCP_PROFILE`, or stop the other instance.
 
 ## License
 
